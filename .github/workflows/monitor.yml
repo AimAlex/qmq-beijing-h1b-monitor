@@ -1,0 +1,47 @@
+name: QMQ slot monitor
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: qmq-slot-monitor
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Read QMQ dynamic availability
+        run: npm run monitor
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmq-result-${{ github.run_id }}
+          path: result.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Open an issue when matching slots appear
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          STATUS=$(node -p "require('./result.json').status")
+          [ "$STATUS" = "available" ] || exit 0
+          TITLE="QMQ: 北京 H-1B 发现 2026-11-01 至 2026-11-15 可预约位"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq 'length')
+          [ "$EXISTING" = "0" ] || exit 0
+          gh issue create --title "$TITLE" --body-file result.json
