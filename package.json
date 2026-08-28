@@ -1,0 +1,12 @@
+{
+  "name": "qmq-beijing-h1b-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "monitor": "node monitor.js"
+  },
+  "dependencies": {
+    "playwright": "1.55.0"
+  }
+}
