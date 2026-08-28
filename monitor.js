@@ -17,8 +17,10 @@ const result = {
   checkedAt: new Date().toISOString(),
   config: CONFIG,
   status: 'unknown',
+  targetStatus: 'unknown',
   matches: [],
   currentAvailable: [],
+  currentAvailableCount: null,
   note: '',
   diagnostics: {},
 };
@@ -63,6 +65,10 @@ try {
   const cityCardText = await cityCard.innerText().catch(() => '');
   const dialogs = await page.locator('[role="dialog"]:visible').allInnerTexts().catch(() => []);
   const availabilityText = [cityCardText, ...dialogs].filter(Boolean).join('\n');
+  result.currentAvailableCount = Number(
+    cityCardText.match(new RegExp(`${CONFIG.city}\\s+(\\d+)\\s*个可用日期`))?.[1] ?? NaN
+  );
+  if (!Number.isFinite(result.currentAvailableCount)) result.currentAvailableCount = null;
   result.diagnostics.cityCardText = normalize(cityCardText).slice(0, 2_000);
   result.diagnostics.visibleDialogs = dialogs.map(normalize).slice(0, 5);
   const verificationBlocked = /人机验证|无感验证|防止恶意抓取|验证码|captcha|verify you are human/i
@@ -91,12 +97,15 @@ try {
   );
   if (result.matches.length) {
     result.status = 'available';
+    result.targetStatus = 'available';
     result.note = 'Found matching dynamically rendered appointment slots.';
   } else if (verificationBlocked) {
     result.status = 'verification_blocked';
+    result.targetStatus = 'unknown_verification_required';
     result.note = 'QMQ did not expose the date list because human verification is still required; the monitor did not bypass it.';
   } else {
     result.status = 'none';
+    result.targetStatus = 'none';
     result.note = `No target match was found. QMQ exposed ${result.currentAvailable.length} current Beijing slot entries.`;
   }
 } catch (error) {
@@ -120,12 +129,16 @@ try {
 } finally {
   await browser.close();
   await writeFile('result.json', `${JSON.stringify(result, null, 2)}\n`);
-  const targetLine = result.matches.length
+  const targetLine = result.targetStatus === 'available'
     ? `发现 ${result.matches.length} 个目标预约位：${result.matches.map((slot) => `${slot.date} ${slot.visaType}`).join('、')}`
-    : `未发现 ${CONFIG.startDate} 至 ${CONFIG.endDate} 的北京 ${CONFIG.visaType} 可预约位`;
+    : result.targetStatus === 'none'
+      ? `未发现 ${CONFIG.startDate} 至 ${CONFIG.endDate} 的北京 ${CONFIG.visaType} 可预约位`
+      : `暂时无法判定 ${CONFIG.startDate} 至 ${CONFIG.endDate} 的北京 ${CONFIG.visaType} 是否有位（QMQ 要求人机验证）`;
   const currentLines = result.currentAvailable.length
     ? result.currentAvailable.map((slot) => `- ${slot.date} · ${slot.visaType} · ${slot.context}`).join('\n')
-    : '- 未读取到公开的具体日期（如状态为 verification_blocked，表示 QMQ 要求完成人机验证）';
+    : result.currentAvailableCount !== null
+      ? `- QMQ 当前显示北京共有 **${result.currentAvailableCount} 个可用日期**；具体日期被人机验证保护，云端未取得日期列表。`
+      : '- 未读取到公开的具体日期（如状态为 verification_blocked，表示 QMQ 要求完成人机验证）';
   await writeFile('summary.md', `## QMQ 北京预约位监控\n\n**目标结果：${targetLine}**\n\n### 当前可预约位\n\n${currentLines}\n\n状态：${result.status}\n\n${result.note}\n`);
   console.log(JSON.stringify(result, null, 2));
 }
