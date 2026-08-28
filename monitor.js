@@ -19,17 +19,24 @@ const result = {
   status: 'unknown',
   matches: [],
   note: '',
+  diagnostics: {},
 };
 
 const browser = await chromium.launch({ headless: true });
+let page;
 try {
-  const page = await browser.newPage({
+  page = await browser.newPage({
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',
     viewport: { width: 1440, height: 1200 },
   });
 
-  await page.goto(CONFIG.source, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  const response = await page.goto(CONFIG.source, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  result.diagnostics.httpStatus = response?.status() ?? null;
+  result.diagnostics.server = response?.headers()['server'] ?? null;
+  result.diagnostics.cfRay = response?.headers()['cf-ray'] ?? null;
+  result.diagnostics.finalUrl = page.url();
+  result.diagnostics.title = await page.title();
   await page.getByRole('heading', { name: '当前可预约面签位', exact: true })
     .waitFor({ state: 'visible', timeout: 30_000 });
 
@@ -101,6 +108,20 @@ try {
 } catch (error) {
   result.status = 'error';
   result.note = error instanceof Error ? error.message : String(error);
+  if (page) {
+    result.diagnostics.finalUrl = page.url();
+    result.diagnostics.title = await page.title().catch(() => null);
+    const bodyText = await page.locator('body').innerText({ timeout: 5_000 }).catch(() => '');
+    result.diagnostics.bodyText = normalize(bodyText).slice(0, 4_000);
+    const probe = `${result.diagnostics.title || ''} ${result.diagnostics.bodyText || ''}`;
+    result.diagnostics.detectedBlock =
+      /cloudflare|cf-ray|checking your browser|just a moment/i.test(probe) ? 'cloudflare_challenge' :
+      /人机验证|验证码|captcha|verify you are human|verification/i.test(probe) ? 'human_verification' :
+      /access denied|forbidden|blocked|拒绝访问|禁止访问/i.test(probe) ? 'access_denied' :
+      'unknown';
+    await writeFile('diagnostic.html', await page.locator('html').evaluate((el) => el.outerHTML).catch(() => ''));
+    await page.screenshot({ path: 'diagnostic.png', fullPage: true }).catch(() => {});
+  }
   process.exitCode = 1;
 } finally {
   await browser.close();
