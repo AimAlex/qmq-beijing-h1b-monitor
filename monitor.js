@@ -34,6 +34,26 @@ try {
     viewport: { width: 1440, height: 1200 },
   });
 
+  const verificationNetwork = [];
+  const failedRequests = [];
+  const browserErrors = [];
+  page.on('response', (response) => {
+    const url = response.url();
+    if (/qmq\.app|geetest|captcha|verify/i.test(url)) {
+      verificationNetwork.push({ url, status: response.status() });
+    }
+  });
+  page.on('requestfailed', (request) => {
+    const url = request.url();
+    if (/qmq\.app|geetest|captcha|verify/i.test(url)) {
+      failedRequests.push({ url, error: request.failure()?.errorText ?? 'unknown' });
+    }
+  });
+  page.on('pageerror', (error) => browserErrors.push(String(error)));
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+
   const response = await page.goto(CONFIG.source, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   result.diagnostics.httpStatus = response?.status() ?? null;
   result.diagnostics.server = response?.headers()['server'] ?? null;
@@ -60,7 +80,7 @@ try {
   const reveal = cityCard.getByRole('button', { name: /查看可预约日期/ });
   await reveal.click();
 
-  await page.waitForTimeout(15_000);
+  await page.waitForTimeout(30_000);
 
   const cityCardText = await cityCard.innerText().catch(() => '');
   const dialogs = await page.locator('[role="dialog"]:visible').allInnerTexts().catch(() => []);
@@ -71,6 +91,9 @@ try {
   if (!Number.isFinite(result.currentAvailableCount)) result.currentAvailableCount = null;
   result.diagnostics.cityCardText = normalize(cityCardText).slice(0, 2_000);
   result.diagnostics.visibleDialogs = dialogs.map(normalize).slice(0, 5);
+  result.diagnostics.verificationNetwork = verificationNetwork.slice(-100);
+  result.diagnostics.failedRequests = failedRequests.slice(-50);
+  result.diagnostics.browserErrors = browserErrors.slice(-50);
   const verificationBlocked = /人机验证|无感验证|防止恶意抓取|验证码|captcha|verify you are human/i
     .test(availabilityText);
 
