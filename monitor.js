@@ -37,11 +37,17 @@ try {
   result.diagnostics.cfRay = response?.headers()['cf-ray'] ?? null;
   result.diagnostics.finalUrl = page.url();
   result.diagnostics.title = await page.title();
-  await page.getByRole('heading', { name: '当前可预约面签位', exact: true })
-    .waitFor({ state: 'visible', timeout: 30_000 });
 
   const acknowledgement = page.getByRole('button', { name: /我已知悉/ });
-  if (await acknowledgement.isVisible().catch(() => false)) await acknowledgement.click();
+  if (await acknowledgement.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    result.diagnostics.announcementModal = true;
+    await acknowledgement.click();
+  } else {
+    result.diagnostics.announcementModal = false;
+  }
+
+  await page.getByRole('heading', { name: '当前可预约面签位', exact: true })
+    .waitFor({ state: 'visible', timeout: 30_000 });
 
   const cityLabel = page.getByText(CONFIG.city, { exact: true }).last();
   await cityLabel.waitFor({ state: 'visible', timeout: 15_000 });
