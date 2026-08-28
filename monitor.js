@@ -18,6 +18,7 @@ const result = {
   config: CONFIG,
   status: 'unknown',
   matches: [],
+  currentAvailable: [],
   note: '',
   diagnostics: {},
 };
@@ -59,57 +60,44 @@ try {
 
   await page.waitForTimeout(15_000);
 
-  const section = await page.evaluate(() => {
-    const headings = [...document.querySelectorAll('h2')];
-    const start = headings.find((node) => node.textContent?.includes('当前可预约面签位'));
-    if (!start) return '';
-    const chunks = [];
-    let node = start.parentElement?.nextElementSibling ?? start.nextElementSibling;
-    while (node) {
-      if (node.matches?.('h2') || node.querySelector?.('h2')) {
-        const nextHeading = node.matches?.('h2') ? node : node.querySelector('h2');
-        if (nextHeading?.textContent?.includes('常见问题')) break;
-      }
-      chunks.push(node.innerText || '');
-      node = node.nextElementSibling;
-    }
-    return chunks.join('\n');
-  });
-
-  const visibleText = normalize(section || await cityCard.innerText());
-  const verificationBlocked = /人机验证|防止恶意抓取|验证码|captcha|verify you are human/i
-    .test(visibleText);
+  const cityCardText = await cityCard.innerText().catch(() => '');
+  const dialogs = await page.locator('[role="dialog"]:visible').allInnerTexts().catch(() => []);
+  const availabilityText = [cityCardText, ...dialogs].filter(Boolean).join('\n');
+  result.diagnostics.cityCardText = normalize(cityCardText).slice(0, 2_000);
+  result.diagnostics.visibleDialogs = dialogs.map(normalize).slice(0, 5);
+  const verificationBlocked = /人机验证|无感验证|防止恶意抓取|验证码|captcha|verify you are human/i
+    .test(availabilityText);
 
   const dateRegex = /20\d{2}[-\/]\d{2}[-\/]\d{2}/g;
-  const candidates = await page.locator('body *').evaluateAll((elements) =>
-    elements
-      .filter((element) => element.children.length <= 8)
-      .map((element) => (element.innerText || '').trim())
-      .filter((text) => text && text.length <= 500)
-  );
+  const candidates = availabilityText.split(/\n+/).map(normalize).filter(Boolean);
 
   const unique = new Map();
   for (const raw of candidates) {
     const text = normalize(raw);
-    if (!text.includes(CONFIG.city) || !text.includes(CONFIG.visaType) || excluded(text)) continue;
+    if (excluded(text)) continue;
     for (const rawDate of text.match(dateRegex) || []) {
       const date = rawDate.replaceAll('/', '-');
-      if (date < CONFIG.startDate || date > CONFIG.endDate) continue;
       const key = `${date}|${text}`;
-      unique.set(key, { city: CONFIG.city, visaType: CONFIG.visaType, date, context: text });
+      const visaType = text.match(/\b(?:H-1B|H-4|L-1|L-2|O-1|F-1|F-2|J-1|J-2|B1\/B2|K-1|C1\/D)\b/i)?.[0] ?? '未标明';
+      unique.set(key, { city: CONFIG.city, visaType, date, context: text });
     }
   }
 
-  result.matches = [...unique.values()].sort((a, b) => a.date.localeCompare(b.date));
+  result.currentAvailable = [...unique.values()].sort((a, b) => a.date.localeCompare(b.date));
+  result.matches = result.currentAvailable.filter((slot) =>
+    slot.visaType.toUpperCase() === CONFIG.visaType &&
+    slot.date >= CONFIG.startDate &&
+    slot.date <= CONFIG.endDate
+  );
   if (result.matches.length) {
     result.status = 'available';
     result.note = 'Found matching dynamically rendered appointment slots.';
   } else if (verificationBlocked) {
     result.status = 'verification_blocked';
-    result.note = 'QMQ required human verification; the monitor did not bypass it.';
+    result.note = 'QMQ did not expose the date list because human verification is still required; the monitor did not bypass it.';
   } else {
     result.status = 'none';
-    result.note = 'No matching current appointment slots were found.';
+    result.note = `No target match was found. QMQ exposed ${result.currentAvailable.length} current Beijing slot entries.`;
   }
 } catch (error) {
   result.status = 'error';
@@ -132,5 +120,12 @@ try {
 } finally {
   await browser.close();
   await writeFile('result.json', `${JSON.stringify(result, null, 2)}\n`);
+  const targetLine = result.matches.length
+    ? `发现 ${result.matches.length} 个目标预约位：${result.matches.map((slot) => `${slot.date} ${slot.visaType}`).join('、')}`
+    : `未发现 ${CONFIG.startDate} 至 ${CONFIG.endDate} 的北京 ${CONFIG.visaType} 可预约位`;
+  const currentLines = result.currentAvailable.length
+    ? result.currentAvailable.map((slot) => `- ${slot.date} · ${slot.visaType} · ${slot.context}`).join('\n')
+    : '- 未读取到公开的具体日期（如状态为 verification_blocked，表示 QMQ 要求完成人机验证）';
+  await writeFile('summary.md', `## QMQ 北京预约位监控\n\n**目标结果：${targetLine}**\n\n### 当前可预约位\n\n${currentLines}\n\n状态：${result.status}\n\n${result.note}\n`);
   console.log(JSON.stringify(result, null, 2));
 }
